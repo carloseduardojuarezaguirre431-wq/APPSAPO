@@ -46,6 +46,73 @@ async function editCaption(chat_id, message_id, caption) {
   });
 }
 
+// ══ ACREDITAR GANANCIAS DE MINERÍA ════════════════════════════
+async function procesarGanancias() {
+  console.log('⛏ Procesando ganancias de minería...');
+  const ahora = Date.now();
+  const ciclo = 24 * 60 * 60 * 1000; // 24 horas en ms
+
+  try {
+    // Obtener todos los usuarios
+    const usuariosSnap = await db.collection('usuarios').get();
+
+    for (const usuarioDoc of usuariosSnap.docs) {
+      const uid = usuarioDoc.id;
+
+      // Obtener paquetes activos del usuario
+      const paquetesSnap = await db.collection('usuarios').doc(uid)
+        .collection('paquetes').where('activo', '==', true).get();
+
+      if (paquetesSnap.empty) continue;
+
+      for (const paqueteDoc of paquetesSnap.docs) {
+        const paquete = paqueteDoc.data();
+        const start = paquete.start;
+        const ultimoPago = paquete.ultimoPago || start;
+        const ganancia = paquete.ganancia || 10;
+
+        // Verificar si han pasado 24h desde el último pago
+        if (ahora - ultimoPago >= ciclo) {
+          // Calcular cuántos ciclos han pasado sin pagar
+          const ciclosPendientes = Math.floor((ahora - ultimoPago) / ciclo);
+
+          for (let i = 0; i < ciclosPendientes; i++) {
+            // Acreditar ganancia al saldo
+            await db.collection('usuarios').doc(uid)
+              .update({ saldo: FieldValue.increment(ganancia) });
+
+            // Registrar en historial
+            await db.collection('usuarios').doc(uid)
+              .collection('historial').add({
+                tipo: 'ganancia',
+                monto: ganancia,
+                planId: paqueteDoc.id,
+                fecha: FieldValue.serverTimestamp()
+              });
+          }
+
+          // Actualizar ultimoPago
+          await db.collection('usuarios').doc(uid)
+            .collection('paquetes').doc(paqueteDoc.id)
+            .update({ ultimoPago: ultimoPago + (ciclosPendientes * ciclo) });
+
+          console.log(`✅ +$${ganancia * ciclosPendientes} acreditados a ${uid}`);
+        }
+      }
+    }
+
+    console.log('✅ Ganancias procesadas correctamente');
+  } catch (err) {
+    console.error('❌ Error procesando ganancias:', err);
+  }
+}
+
+// Correr cada hora
+setInterval(procesarGanancias, 60 * 60 * 1000);
+// También correr al iniciar el servidor
+procesarGanancias();
+
+// ══ WEBHOOK TELEGRAM ══════════════════════════════════════════
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   const update = req.body;
@@ -61,7 +128,7 @@ app.post('/webhook', async (req, res) => {
   await answerCallback(cq.id, 'Procesando...');
 
   try {
-    // RETIROS
+    // ── RETIROS ──────────────────────────────────────────────
     if (accion === 'aprobar_retiro' || accion === 'rechazar_retiro') {
       const retiroId  = parts[1];
       const retiroRef = db.collection('retiros_pendientes').doc(retiroId);
@@ -91,7 +158,7 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // RECARGAS
+    // ── RECARGAS ─────────────────────────────────────────────
     if (accion === 'aprobar_recarga' || accion === 'rechazar_recarga') {
       const recargaId  = parts[1];
       const monto      = parseFloat(parts[2]);
